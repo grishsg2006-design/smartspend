@@ -1,273 +1,413 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.cluster import KMeans
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, classification_report
+)
 
-st.set_page_config(page_title="SmartSpend", page_icon="💰", layout="wide")
+st.set_page_config(
+    page_title="SmartSpend | Expense Intelligence",
+    page_icon="💰",
+    layout="wide"
+)
+
+# ---------- STYLE ----------
 st.markdown("""
 <style>
-.stApp {background:#f7f9fc}
-.block-container {padding-top:1.5rem}
-[data-testid="stMetric"] {background:white;border:1px solid #e2e8f0;padding:14px;border-radius:12px}
+.stApp { background: #F8FAFC; color: #0F172A; }
+.block-container { padding-top: 2rem; padding-bottom: 2rem; }
+[data-testid="stSidebar"] {
+    background: #FFFFFF;
+    border-right: 1px solid #E2E8F0;
+}
+[data-testid="stMetric"] {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    padding: 18px;
+    border-radius: 14px;
+}
+h1, h2, h3 { color: #0F172A; }
 </style>
 """, unsafe_allow_html=True)
-st.title("💰 SmartSpend")
-st.caption("Interactive machine-learning expense tracker")
-st.info("Models are trained from expense_data_1.csv. Prediction tables and charts on the input pages use only the transactions you enter/upload. A confusion matrix requires actual labels to compare against predictions.")
 
-DATA_FILE = "expense_data_1.csv"
-
+# ---------- LOAD DATA ----------
 @st.cache_data
 def load_data():
-    df = pd.read_csv(DATA_FILE)
-    df.columns = [str(c).strip() for c in df.columns]
-    required = ["Date", "Amount", "Category", "Income/Expense"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError("CSV missing columns: " + ", ".join(missing))
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
-    if "Currency" not in df:
-        df["Currency"] = "INR"
-    df["Currency"] = df["Currency"].fillna("INR").astype(str).str.strip().str.upper()
-    df["Category"] = df["Category"].fillna("Other").astype(str).str.strip()
-    df["Income/Expense"] = df["Income/Expense"].astype(str).str.strip().str.title()
-    df = df.dropna(subset=["Date", "Amount"])
-    df = df[(df["Currency"] == "INR") & df["Income/Expense"].isin(["Income", "Expense"])].copy()
-    df["Month"] = df["Date"].dt.month
-    df["Day"] = df["Date"].dt.day
-    df["DayOfWeek"] = df["Date"].dt.dayofweek
-    return df
+    data = pd.read_csv("expense_data_1.csv")
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data["Amount"] = pd.to_numeric(data["Amount"], errors="coerce")
+    data["Currency"] = data["Currency"].fillna("INR")
+    data["Category"] = data["Category"].fillna("Other")
+    data["Income/Expense"] = data["Income/Expense"].astype(str).str.strip()
 
-@st.cache_resource
-def train_models(df):
-    exp = df[df["Income/Expense"] == "Expense"].copy()
-    if len(exp) < 5:
-        raise ValueError("At least five INR expense rows are required.")
-    # Linear Regression: estimate amount from date features.
-    reg = LinearRegression().fit(exp[["Month", "Day", "DayOfWeek"]], exp["Amount"])
+    data = data[
+        (data["Currency"] == "INR")
+    ].dropna(subset=["Date", "Amount"]).copy()
 
-    # Logistic Regression: classify Income/Expense.
-    Xie, yie = df[["Month", "Day", "DayOfWeek", "Amount"]], df["Income/Expense"]
-    if yie.nunique() < 2:
-        raise ValueError("Dataset must contain Income and Expense records.")
-    scaler_ie = StandardScaler().fit(Xie)
-    logistic = LogisticRegression(max_iter=1000, random_state=42)
-    logistic.fit(scaler_ie.transform(Xie), yie)
+    data["Month"] = data["Date"].dt.month
+    data["Day"] = data["Date"].dt.day
+    data["DayOfWeek"] = data["Date"].dt.dayofweek
 
-    # KNN and Decision Tree: classify expense category.
-    counts = exp["Category"].value_counts()
-    cat = exp[exp["Category"].isin(counts[counts >= 2].index)].copy()
-    if len(cat) < 5 or cat["Category"].nunique() < 2:
-        raise ValueError("Not enough repeated categories to train category models.")
-    Xcat, ycat = cat[["Month", "Day", "DayOfWeek", "Amount"]], cat["Category"]
-    scaler_cat = StandardScaler().fit(Xcat)
-    knn = KNeighborsClassifier(n_neighbors=min(5, len(cat))).fit(scaler_cat.transform(Xcat), ycat)
-    tree = DecisionTreeClassifier(max_depth=5, class_weight="balanced", random_state=42).fit(Xcat, ycat)
+    return data
 
-    # K-Means: group transactions by amount/date.
-    Xcl = exp[["Amount", "Month", "Day", "DayOfWeek"]]
-    scaler_cl = StandardScaler().fit(Xcl)
-    kmeans = KMeans(n_clusters=min(3, len(exp)), random_state=42, n_init=10)
-    kmeans.fit(scaler_cl.transform(Xcl))
-    return {"reg":reg, "log":logistic, "scaler_ie":scaler_ie,
-            "knn":knn, "tree":tree, "scaler_cat":scaler_cat,
-            "kmeans":kmeans, "scaler_cl":scaler_cl, "exp":exp, "cat":cat}
+df = load_data()
+expenses = df[df["Income/Expense"] == "Expense"].copy()
+income = df[df["Income/Expense"] == "Income"].copy()
 
-try:
-    df = load_data()
-    m = train_models(df)
-except FileNotFoundError:
-    st.error(f"File `{DATA_FILE}` not found. Put your dataset CSV in the same folder as app.py.")
-    st.stop()
-except Exception as e:
-    st.error(f"Could not load/train models: {e}")
-    st.stop()
+# ---------- SIDEBAR ----------
+st.sidebar.markdown("# 💰 SmartSpend")
+st.sidebar.caption("PERSONAL FINANCE INTELLIGENCE")
+st.sidebar.divider()
 
-page = st.sidebar.radio("Navigate", ["Single prediction", "Batch input & graphs", "Model evaluation"])
+page = st.sidebar.radio(
+    "WORKSPACE",
+    [
+        "Overview",
+        "Transactions",
+        "Spending Analytics",
+        "Model Evaluation",
+        "K-Means Clustering"
+    ]
+)
 
-def add_date_features(rows):
-    out = rows.copy()
-    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
-    out["Amount"] = pd.to_numeric(out["Amount"], errors="coerce")
-    out = out.dropna(subset=["Date", "Amount"]).copy()
-    out["Month"] = out["Date"].dt.month
-    out["Day"] = out["Date"].dt.day
-    out["DayOfWeek"] = out["Date"].dt.dayofweek
-    return out
+st.sidebar.divider()
+st.sidebar.caption("Machine Learning Expense Tracker")
 
-def predict_batch(rows):
-    out = add_date_features(rows)
-    if out.empty:
-        return out
-    X = out[["Month", "Day", "DayOfWeek", "Amount"]]
-    out["Predicted Income/Expense"] = m["log"].predict(m["scaler_ie"].transform(X))
-    out["Predicted Category (KNN)"] = m["knn"].predict(m["scaler_cat"].transform(X))
-    out["Predicted Category (Decision Tree)"] = m["tree"].predict(X)
-    out["Predicted Cluster"] = m["kmeans"].predict(
-        m["scaler_cl"].transform(out[["Amount", "Month", "Day", "DayOfWeek"]]))
-    out["Estimated Amount (Linear Regression)"] = np.maximum(
-        0, m["reg"].predict(out[["Month", "Day", "DayOfWeek"]]))
-    return out
+# ---------- HEADER ----------
+st.title("SmartSpend")
+st.caption("Understand your spending. Discover patterns. Make informed decisions.")
 
-if page == "Single prediction":
-    st.subheader("Enter one transaction")
-    with st.form("one_transaction"):
-        c1, c2 = st.columns(2)
-        with c1:
-            d = st.date_input("Transaction date")
-        with c2:
-            amount = st.number_input("Amount (INR)", min_value=0.01, value=150.0, step=10.0)
-        go = st.form_submit_button("Predict", type="primary", use_container_width=True)
-    if go:
-        row = pd.DataFrame([{"Date":pd.Timestamp(d), "Amount":float(amount)}])
-        result = predict_batch(row)
-        r = result.iloc[0]
-        a,b,c,dcol = st.columns(4)
-        a.metric("Income / Expense", r["Predicted Income/Expense"])
-        b.metric("KNN category", r["Predicted Category (KNN)"])
-        c.metric("Decision Tree category", r["Predicted Category (Decision Tree)"])
-        dcol.metric("Cluster", f"Cluster {int(r['Predicted Cluster'])}")
-        st.metric("Linear Regression estimated amount", f"₹{r['Estimated Amount (Linear Regression)']:,.2f}")
-        st.caption("The amount estimate uses date features only; treat it as an experimental estimate, not a reliable personal budget.")
-        st.markdown("#### Graphs for your input")
-        fig, ax = plt.subplots(figsize=(6,3.5))
-        ax.bar(["Entered amount", "Estimated amount"], [amount, r["Estimated Amount (Linear Regression)"]])
-        ax.set_ylabel("INR (₹)")
-        ax.set_title("Entered vs estimated amount")
+if page == "Overview":
+    st.subheader("Financial Overview")
+
+    total_expenses = expenses["Amount"].sum()
+    total_income = income["Amount"].sum()
+    net_amount = total_income - total_expenses
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Expenses", f"₹{total_expenses:,.2f}")
+    c2.metric("Total Income", f"₹{total_income:,.2f}")
+    c3.metric("Net Difference", f"₹{net_amount:,.2f}")
+    c4.metric("Expense Transactions", f"{len(expenses):,}")
+
+    st.divider()
+    left, right = st.columns([1.2, 1])
+
+    with left:
+        st.subheader("Spending by Category")
+        category_sum = expenses.groupby("Category")["Amount"].sum().sort_values()
+        fig, ax = plt.subplots(figsize=(7, 4))
+        category_sum.plot(kind="barh", ax=ax, color="#F59E0B")
+        ax.set_xlabel("Amount (INR)")
+        ax.set_ylabel("")
+        ax.spines[["top", "right", "left"]].set_visible(False)
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
-        st.dataframe(result[["Date","Amount","Predicted Income/Expense","Predicted Category (KNN)","Predicted Category (Decision Tree)","Predicted Cluster","Estimated Amount (Linear Regression)"]], use_container_width=True, hide_index=True)
-        st.download_button("Download prediction", result.to_csv(index=False).encode(), "smartspend_prediction.csv", "text/csv")
-        st.warning("A confusion matrix cannot be calculated from one input because its correct label is unknown. Use Batch input with actual labels to calculate one.")
 
-elif page == "Batch input & graphs":
-    st.subheader("Analyze your own transactions")
-    st.write("Upload a CSV with `Date` and `Amount`, or enter several rows below.")
-    uploaded = st.file_uploader("Upload your input CSV", type=["csv"])
-    if uploaded:
-        try:
-            user_rows = pd.read_csv(uploaded)
-            if not {"Date", "Amount"}.issubset(user_rows.columns):
-                st.error("CSV must contain columns named Date and Amount.")
-            else:
-                result = predict_batch(user_rows)
-                if result.empty:
-                    st.warning("No valid rows. Check dates and amounts.")
-                else:
-                    st.success(f"Predictions generated for {len(result)} of your rows.")
-                    st.dataframe(result, use_container_width=True, hide_index=True)
-                    st.download_button("Download predicted rows", result.to_csv(index=False).encode(), "smartspend_predictions.csv", "text/csv")
-                    st.markdown("### Charts from your uploaded rows only")
-                    left, right = st.columns(2)
-                    with left:
-                        counts = result["Predicted Category (Decision Tree)"].value_counts()
-                        fig, ax = plt.subplots()
-                        ax.bar(counts.index.astype(str), counts.values)
-                        ax.set_title("Your predicted category counts")
-                        ax.set_ylabel("Transactions")
-                        ax.tick_params(axis="x", rotation=35)
-                        fig.tight_layout(); st.pyplot(fig); plt.close(fig)
-                    with right:
-                        counts = result["Predicted Cluster"].value_counts().sort_index()
-                        fig, ax = plt.subplots()
-                        ax.bar(counts.index.astype(str), counts.values)
-                        ax.set_title("Clusters in your input")
-                        ax.set_xlabel("Cluster"); ax.set_ylabel("Transactions")
-                        fig.tight_layout(); st.pyplot(fig); plt.close(fig)
-                    fig, ax = plt.subplots(figsize=(9,4))
-                    temp = result.sort_values("Date")
-                    ax.plot(temp["Date"], temp["Amount"], marker="o")
-                    ax.set_title("Amounts in your submitted transactions")
-                    ax.set_ylabel("Amount (₹)"); ax.tick_params(axis="x", rotation=30); ax.grid(alpha=.25)
-                    fig.tight_layout(); st.pyplot(fig); plt.close(fig)
+    with right:
+        st.subheader("Income vs Expenses")
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.bar(
+            ["Income", "Expenses"],
+            [total_income, total_expenses],
+            color=["#16A34A", "#F59E0B"],
+            width=0.55
+        )
+        ax.set_ylabel("Amount (INR)")
+        ax.spines[["top", "right"]].set_visible(False)
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
 
-                    st.markdown("### Confusion matrix for your own input (optional)")
-                    if "Actual Category" in result.columns:
-                        actual = result["Actual Category"].astype(str).str.strip()
-                        pred = result["Predicted Category (Decision Tree)"].astype(str)
-                        labels = sorted(set(actual) | set(pred))
-                        cm = confusion_matrix(actual, pred, labels=labels)
-                        fig, ax = plt.subplots(figsize=(max(5,len(labels)), max(4,len(labels)*.7)))
-                        im = ax.imshow(cm, cmap="Blues")
-                        ax.set_xticks(range(len(labels)), labels=labels, rotation=45, ha="right")
-                        ax.set_yticks(range(len(labels)), labels=labels)
-                        ax.set_xlabel("Predicted"); ax.set_ylabel("Actual"); ax.set_title("Your input: category confusion matrix")
-                        for i in range(len(labels)):
-                            for j in range(len(labels)): ax.text(j,i,int(cm[i,j]),ha="center",va="center")
-                        fig.colorbar(im, ax=ax); fig.tight_layout(); st.pyplot(fig); plt.close(fig)
-                    elif "Actual Income/Expense" in result.columns:
-                        actual = result["Actual Income/Expense"].astype(str).str.strip().str.title()
-                        pred = result["Predicted Income/Expense"].astype(str)
-                        labels = ["Expense", "Income"]
-                        cm = confusion_matrix(actual, pred, labels=labels)
-                        fig, ax = plt.subplots(figsize=(5,4))
-                        im = ax.imshow(cm, cmap="Blues")
-                        ax.set_xticks([0,1], labels=labels); ax.set_yticks([0,1], labels=labels)
-                        ax.set_xlabel("Predicted"); ax.set_ylabel("Actual"); ax.set_title("Your input: transaction-type confusion matrix")
-                        for i in range(2):
-                            for j in range(2): ax.text(j,i,int(cm[i,j]),ha="center",va="center")
-                        fig.colorbar(im, ax=ax); fig.tight_layout(); st.pyplot(fig); plt.close(fig)
-                    else:
-                        st.info("To calculate a confusion matrix, add an `Actual Category` or `Actual Income/Expense` column to your CSV. It compares known true labels with predictions; it cannot be meaningfully made from unlabeled inputs.")
-        except Exception as e:
-            st.error(f"Could not process CSV: {e}")
-    else:
-        manual = st.data_editor(pd.DataFrame({"Date":[pd.Timestamp.today().strftime("%Y-%m-%d")],"Amount":[150.0]}), num_rows="dynamic", use_container_width=True)
-        if st.button("Predict entered rows", type="primary"):
-            result = predict_batch(manual)
-            if result.empty:
-                st.warning("Enter at least one valid date and amount.")
-            else:
-                st.dataframe(result, use_container_width=True, hide_index=True)
-                st.bar_chart(result["Predicted Category (Decision Tree)"].value_counts())
-                st.bar_chart(result["Predicted Cluster"].value_counts().sort_index())
-                st.caption("These charts summarize only your entered rows.")
+    st.subheader("Recent Transactions")
+    st.dataframe(
+        df.sort_values("Date", ascending=False)[
+            ["Date", "Category", "Amount", "Income/Expense"]
+        ].head(10),
+        use_container_width=True,
+        hide_index=True
+    )
 
-else:
-    st.subheader("Model evaluation")
-    st.warning("This page evaluates on a held-out split of the source dataset, not on your individual input. For a confusion matrix on your own transactions, upload a labeled batch in the previous page.")
-    choice = st.selectbox("Classifier", ["Logistic Regression — Income/Expense", "KNN — Expense category", "Decision Tree — Expense category"])
-    if choice.startswith("Logistic"):
-        ev = df.copy()
-        X, y = ev[["Month","Day","DayOfWeek","Amount"]], ev["Income/Expense"]
-        Xtr, Xte, ytr, yte = train_test_split(X,y,test_size=.2,random_state=42,stratify=y)
+elif page == "Transactions":
+    st.subheader("Transaction Explorer")
+
+    search = st.text_input("Search category")
+    kind = st.selectbox("Transaction type", ["All", "Expense", "Income"])
+
+    view = df.copy()
+    if search:
+        view = view[view["Category"].str.contains(search, case=False, na=False)]
+    if kind != "All":
+        view = view[view["Income/Expense"] == kind]
+
+    st.caption(f"{len(view)} transactions found")
+    st.dataframe(
+        view.sort_values("Date", ascending=False),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.download_button(
+        "Download filtered transactions",
+        view.to_csv(index=False).encode("utf-8"),
+        "smartspend_transactions.csv",
+        "text/csv"
+    )
+
+elif page == "Spending Analytics":
+    st.subheader("Spending Analytics")
+
+    monthly = expenses.copy()
+    monthly["MonthLabel"] = monthly["Date"].dt.to_period("M").astype(str)
+    monthly_sum = monthly.groupby("MonthLabel")["Amount"].sum()
+
+    st.markdown("#### Monthly expense trend")
+    st.line_chart(monthly_sum, use_container_width=True)
+
+    st.markdown("#### Category summary")
+    summary = expenses.groupby("Category")["Amount"].agg(
+        Transactions="count",
+        Total="sum",
+        Average="mean"
+    ).sort_values("Total", ascending=False).round(2)
+
+    st.dataframe(summary, use_container_width=True)
+
+elif page == "Model Evaluation":
+    st.subheader("Machine Learning Model Evaluation")
+    st.caption(
+        "Models are evaluated on held-out test data. Scores may differ "
+        "slightly from your earlier notebook if settings differ."
+    )
+
+    tab1, tab2, tab3 = st.tabs([
+        "Logistic Regression",
+        "KNN Classifier",
+        "Decision Tree"
+    ])
+
+    # Logistic Regression: Expense vs Income
+    with tab1:
+        log_df = df[df["Income/Expense"].isin(["Expense", "Income"])].copy()
+        X = log_df[["Month", "Day", "DayOfWeek", "Amount"]]
+        y = log_df["Income/Expense"]
+
+        Xtr, Xte, ytr, yte = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
         scaler = StandardScaler()
-        Xtr, Xte = scaler.fit_transform(Xtr), scaler.transform(Xte)
-        model = LogisticRegression(max_iter=1000,random_state=42).fit(Xtr,ytr)
-    else:
-        ev = m["cat"].copy()
-        X, y = ev[["Month","Day","DayOfWeek","Amount"]], ev["Category"]
-        strat = y if y.value_counts().min() >= 2 else None
-        Xtr, Xte, ytr, yte = train_test_split(X,y,test_size=.2,random_state=42,stratify=strat)
-        if choice.startswith("KNN"):
-            scaler = StandardScaler()
-            Xtr, Xte = scaler.fit_transform(Xtr), scaler.transform(Xte)
-            model = KNeighborsClassifier(n_neighbors=min(5,len(ytr))).fit(Xtr,ytr)
-        else:
-            model = DecisionTreeClassifier(max_depth=5,class_weight="balanced",random_state=42).fit(Xtr,ytr)
-    pred = model.predict(Xte)
-    c1,c2,c3 = st.columns(3)
-    c1.metric("Held-out accuracy", f"{accuracy_score(yte,pred):.1%}")
-    c2.metric("Test transactions", len(yte))
-    c3.metric("Classes", y.nunique())
-    labels = list(model.classes_)
-    cm = confusion_matrix(yte,pred,labels=labels)
-    fig, ax = plt.subplots(figsize=(max(5,len(labels)*.9),max(4,len(labels)*.7)))
-    im = ax.imshow(cm,cmap="Blues")
-    ax.set_xticks(range(len(labels)),labels=[str(x) for x in labels],rotation=45,ha="right")
-    ax.set_yticks(range(len(labels)),labels=[str(x) for x in labels])
-    ax.set_xlabel("Predicted"); ax.set_ylabel("Actual"); ax.set_title("Confusion matrix — held-out source data")
-    for i in range(len(labels)):
-        for j in range(len(labels)): ax.text(j,i,int(cm[i,j]),ha="center",va="center")
-    fig.colorbar(im,ax=ax); fig.tight_layout(); st.pyplot(fig); plt.close(fig)
-    st.markdown("#### Classification report")
-    st.dataframe(pd.DataFrame(classification_report(yte,pred,labels=labels,output_dict=True,zero_division=0)).T.round(3), use_container_width=True)
+        Xtr_s = scaler.fit_transform(Xtr)
+        Xte_s = scaler.transform(Xte)
+
+        model = LogisticRegression(max_iter=1000, random_state=42)
+        model.fit(Xtr_s, ytr)
+        pred = model.predict(Xte_s)
+
+        st.markdown("#### Expense / Income classification")
+        a, b, c, d = st.columns(4)
+        a.metric("Accuracy", f"{accuracy_score(yte, pred):.1%}")
+        b.metric("Precision (macro)", f"{precision_score(yte, pred, average='macro', zero_division=0):.1%}")
+        c.metric("Recall (macro)", f"{recall_score(yte, pred, average='macro', zero_division=0):.1%}")
+        d.metric("F1 (macro)", f"{f1_score(yte, pred, average='macro', zero_division=0):.1%}")
+
+        labels = ["Expense", "Income"]
+        cm = confusion_matrix(yte, pred, labels=labels)
+        fig, ax = plt.subplots(figsize=(5, 4))
+        im = ax.imshow(cm, cmap="Blues")
+        ax.set_xticks(range(2), labels=labels)
+        ax.set_yticks(range(2), labels=labels)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("Actual")
+        ax.set_title("Confusion Matrix")
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, cm[i, j], ha="center", va="center")
+        fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.markdown("#### Classification report")
+        st.dataframe(
+            pd.DataFrame(classification_report(
+                yte, pred, output_dict=True, zero_division=0
+            )).T.round(3),
+            use_container_width=True
+        )
+
+    # Prepare category data shared by KNN and Decision Tree
+    category_counts = expenses["Category"].value_counts()
+    valid_categories = category_counts[category_counts >= 2].index
+    cat_df = expenses[expenses["Category"].isin(valid_categories)].copy()
+    Xc = cat_df[["Month", "Day", "DayOfWeek", "Amount"]]
+    yc = cat_df["Category"]
+
+    Xtr, Xte, ytr, yte = train_test_split(
+        Xc, yc, test_size=0.2, random_state=42, stratify=yc
+    )
+    scaler_c = StandardScaler()
+    Xtr_s = scaler_c.fit_transform(Xtr)
+    Xte_s = scaler_c.transform(Xte)
+
+    with tab2:
+        st.markdown("#### KNN category classification")
+        knn = KNeighborsClassifier(n_neighbors=5)
+        knn.fit(Xtr_s, ytr)
+        pred = knn.predict(Xte_s)
+
+        a, b, c, d = st.columns(4)
+        a.metric("Accuracy", f"{accuracy_score(yte, pred):.1%}")
+        b.metric("Precision (macro)", f"{precision_score(yte, pred, average='macro', zero_division=0):.1%}")
+        c.metric("Recall (macro)", f"{recall_score(yte, pred, average='macro', zero_division=0):.1%}")
+        d.metric("F1 (macro)", f"{f1_score(yte, pred, average='macro', zero_division=0):.1%}")
+
+        labels = sorted(yc.unique())
+        cm = confusion_matrix(yte, pred, labels=labels)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        im = ax.imshow(cm, cmap="Blues")
+        ax.set_xticks(range(len(labels)), labels=labels, rotation=45, ha="right")
+        ax.set_yticks(range(len(labels)), labels=labels)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("Actual")
+        ax.set_title("KNN Confusion Matrix")
+        for i in range(len(labels)):
+            for j in range(len(labels)):
+                ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=8)
+        fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.dataframe(
+            pd.DataFrame(classification_report(
+                yte, pred, labels=labels, output_dict=True, zero_division=0
+            )).T.round(3),
+            use_container_width=True
+        )
+
+    with tab3:
+        st.markdown("#### Decision Tree category classification")
+        tree = DecisionTreeClassifier(
+            max_depth=5, random_state=42
+        )
+        tree.fit(Xtr, ytr)
+        pred = tree.predict(Xte)
+
+        a, b, c, d = st.columns(4)
+        a.metric("Accuracy", f"{accuracy_score(yte, pred):.1%}")
+        b.metric("Precision (macro)", f"{precision_score(yte, pred, average='macro', zero_division=0):.1%}")
+        c.metric("Recall (macro)", f"{recall_score(yte, pred, average='macro', zero_division=0):.1%}")
+        d.metric("F1 (macro)", f"{f1_score(yte, pred, average='macro', zero_division=0):.1%}")
+
+        labels = sorted(yc.unique())
+        cm = confusion_matrix(yte, pred, labels=labels)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        im = ax.imshow(cm, cmap="YlOrBr")
+        ax.set_xticks(range(len(labels)), labels=labels, rotation=45, ha="right")
+        ax.set_yticks(range(len(labels)), labels=labels)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("Actual")
+        ax.set_title("Decision Tree Confusion Matrix")
+        for i in range(len(labels)):
+            for j in range(len(labels)):
+                ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=8)
+        fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.dataframe(
+            pd.DataFrame(classification_report(
+                yte, pred, labels=labels, output_dict=True, zero_division=0
+            )).T.round(3),
+            use_container_width=True
+        )
+
+elif page == "K-Means Clustering":
+    st.subheader("Expense Clustering")
+    st.caption("Explore groups of transactions with similar amount and date patterns.")
+
+    Xk = expenses[["Amount", "Month", "Day", "DayOfWeek"]].copy()
+    scaler_k = StandardScaler()
+    Xk_scaled = scaler_k.fit_transform(Xk)
+
+    k = st.slider("Number of clusters (K)", 2, 8, 3)
+    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+    cluster_labels = km.fit_predict(Xk_scaled)
+
+    clustered = expenses.copy()
+    clustered["Cluster"] = cluster_labels
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Cluster distribution")
+        counts = clustered["Cluster"].value_counts().sort_index()
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.bar(counts.index.astype(str), counts.values, color="#F59E0B")
+        ax.set_xlabel("Cluster")
+        ax.set_ylabel("Transactions")
+        ax.spines[["top", "right"]].set_visible(False)
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+    with c2:
+        st.markdown("#### Elbow Method")
+        max_k = min(10, len(Xk_scaled))
+        inertia = []
+        ks = list(range(1, max_k + 1))
+        for n in ks:
+            temp = KMeans(n_clusters=n, random_state=42, n_init=10)
+            temp.fit(Xk_scaled)
+            inertia.append(temp.inertia_)
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(ks, inertia, marker="o", color="#0F766E")
+        ax.set_xlabel("Number of clusters (K)")
+        ax.set_ylabel("Inertia")
+        ax.set_xticks(ks)
+        ax.grid(alpha=0.25)
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+    st.markdown("#### Cluster visualization")
+    fig, ax = plt.subplots(figsize=(9, 5))
+    scatter = ax.scatter(
+        clustered["Month"], clustered["Amount"],
+        c=clustered["Cluster"], cmap="viridis",
+        alpha=0.75, s=45, edgecolors="white", linewidths=0.3
+    )
+    ax.set_xlabel("Month")
+    ax.set_ylabel("Expense Amount (INR)")
+    ax.set_title("Expense Amount by Month and Cluster")
+    ax.grid(alpha=0.2)
+    fig.colorbar(scatter, ax=ax, label="Cluster")
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.markdown("#### Cluster summary")
+    summary = clustered.groupby("Cluster")["Amount"].agg(
+        Transactions="count",
+        Average="mean",
+        Minimum="min",
+        Maximum="max"
+    ).round(2)
+    st.dataframe(summary, use_container_width=True)
+
+    st.info(
+        "Clusters are based on Amount, Month, Day, and DayOfWeek. "
+        "They are exploratory groups, not guaranteed spending categories."
+    )
