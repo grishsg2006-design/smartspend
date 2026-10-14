@@ -37,6 +37,56 @@ st.markdown("""
     border-radius: 14px;
 }
 h1, h2, h3 { color: #0F172A; }
+
+/* SmartSpend: improve dashboard readability */
+
+.stApp {
+    background-color: #F8FAFC;
+    color: #0F172A;
+}
+
+[data-testid="stSidebar"] {
+    background-color: #FFFFFF;
+    border-right: 1px solid #E2E8F0;
+}
+
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span {
+    color: #334155 !important;
+}
+
+.stMarkdown p,
+.stMarkdown li,
+.stCaption,
+label {
+    color: #334155;
+}
+
+[data-testid="stMetric"] {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 14px;
+    padding: 18px;
+}
+
+[data-testid="stMetricLabel"] p {
+    color: #64748B !important;
+}
+
+[data-testid="stMetricValue"] {
+    color: #0F172A !important;
+}
+
+h1, h2, h3 {
+    color: #0F172A !important;
+}
+
+div[data-testid="stDataFrame"] {
+    border: 1px solid #E2E8F0;
+    border-radius: 12px;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
